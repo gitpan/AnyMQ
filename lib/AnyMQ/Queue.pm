@@ -11,6 +11,9 @@ has persistent => (is => "rw", isa => "Bool", default => sub { 0 });
 has buffer => (is => "ro", isa => "ArrayRef", default => sub { [] });
 has cv => (is => "rw", isa => "AnyEvent::CondVar", default => sub { AE::cv });
 has destroyed => (is => "rw", isa => "Bool", default => sub { 0 });
+has on_timeout => (is => "rw");
+has on_error  => (is => "rw");
+has timeout => (is => "rw", isa => "Int", default => sub { 55 });
 
 sub BUILD {
     my $self = shift;
@@ -35,30 +38,49 @@ sub subscribe {
 }
 
 sub _flush {
-    my($self, @messages) = @_;
+    my ($self, @messages) = @_;
+
+    my $cb = $self->{cv}->cb;
+    my $cv = $self->{cv};
+    $self->{cv} = AE::cv;
+    $self->{buffer} = [];
 
     try {
-        my $cb = $self->{cv}->cb;
-        $self->{cv}->send(@messages);
-        $self->{cv} = AE::cv;
-        $self->{buffer} = [];
-
-        if ($self->{persistent}) {
-            $self->{cv}->cb($cb);
-        } else {
-            $self->{timer} = AE::timer 30, 0, sub {
-                weaken $self;
-                warn "Sweep $self (no long-poll reconnect)";
-                undef $self;
-                # XXX: unsubscribe from all AnyMQ
-#                delete $self->clients->{$self_id};
-            };
-            weaken $self->{timer};
-        }
+        $cv->send(@messages);
     } catch {
-        warn $_;
-        $self->destroyed(1);
+        if ($self->on_error) {
+            $self->on_error->($self, $_, @messages);
+        }
+        else {
+            $self->destroyed(1);
+        }
     };
+
+    return if $self->destroyed;
+
+    if ($self->{persistent}) {
+        $self->{cv}->cb($cb);
+    } else {
+        $self->{timer} = $self->_reaper;
+    }
+
+}
+
+sub _reaper {
+    my ($self, $timeout) = @_;
+
+    AnyEvent->timer(
+        after => $timeout || $self->timeout,
+        cb => sub {
+            weaken $self;
+            warn "Timing out $self long-poll" if DEBUG;
+            if ($self->on_timeout) {
+                $self->on_timeout->($self, "timeout")
+            }
+            else {
+                $self->destroyed(1);
+            }
+        });
 }
 
 sub poll_once {
@@ -73,7 +95,7 @@ sub poll_once {
     $timeout = 55 unless defined $timeout;
     $self->{timer} = AE::timer $timeout || 55, 0, sub {
         weaken $self;
-        warn "Timing out $self long-poll" if DEBUG;
+        warn "long-poll timeout, flush and wait for client reconnect" if DEBUG;
         $self->_flush;
     };
     weaken $self->{timer};
@@ -84,11 +106,15 @@ sub poll_once {
 }
 
 sub poll {
-    my($self, $cb) = @_;
+    my ($self, $cb) = @_;
     $self->cv->cb(sub { $cb->($_[0]->recv) });
     $self->persistent(1);
-}
 
+    undef $self->{timer};
+
+    $self->_flush( @{ $self->{buffer} })
+        if @{ $self->{buffer} };
+}
 
 __PACKAGE__->meta->make_immutable;
 no Moose;
@@ -137,15 +163,43 @@ Subscribe to a L<AnyMQ::Topic> object.
 This is the event-driven poll mechanism, which accepts a callback.
 Messages are streamed to C<$code_ref> passed in.
 
-=head2 poll_once($code_ref)
+=head2 poll_once($code_ref, $timeout)
 
 This method returns all messages since the last poll to C<$code_ref>.
+It blocks for C<$timeout> seconds if there's currently no messages
+available.
+
+=head2 destroyed(BOOL)
+
+Marking the current queue as destroyed or not.
+
+=head2 timeout($seconds)
+
+Timeout value for this queue.  Default is 55.
+
+=head2 on_error(sub { my ($queue, $error, @msg) = @_; ... })
+
+Sets the error handler invoked when C<poll> or C<poll_once> callbacks
+fail.  By default the queue is marked as destroyed.  If you register
+this error handler, you should call C<$queue->destroyed(1)> should you
+wish to mark the queue as destroyed and reclaim resources.
+
+Note that for queues that are currently C<poll>'ed, you may unset the
+C<persistent> attribute to avoid the queue from being destroyed, and
+can be used for further C<poll> or C<poll_once> calls.  In this case,
+C<on_timeout> will be triggered if C<poll> or C<poll_once> is not
+called after C<$self->timeout> seconds.
+
+=head2 on_timeout(sub { my ($queue, $error) = @_; ... })
+
+If a queue is not currently polled, this callback will be triggered
+after <$self->timeout> seconds.  The default behaviour is marking the
+queue as destroyed.
 
 =head2 append(@messages)
 
 Append messages directly to the queue.  You probably want to use
 C<publish> method of L<AnyMQ::Topic>
-
 
 =head1 SEE ALSO
 

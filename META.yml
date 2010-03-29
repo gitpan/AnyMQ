@@ -28,4 +28,4 @@ requires:
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/clkao/AnyMQ.git
-version: 0.30
+version: 0.31

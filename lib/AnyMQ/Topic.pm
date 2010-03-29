@@ -14,24 +14,63 @@ with 'MooseX::Traits';
 
 has name => (is => 'rw', isa => 'Str');
 has bus => (is => "ro", isa => "AnyMQ", weak_ref => 1);
-has queues  => (is => 'rw', isa => 'HashRef',  default => sub { +{} });
+has queues => (traits => ['Hash'],
+               is => 'rw',
+               isa => 'HashRef',
+               default => sub { {} },
+               handles => {
+                   add_listener      => 'set',
+                   has_no_listeners  => 'is_empty',
+               }
+           );
+has recycle => (is => "rw", isa => "Bool", default => sub { 0 });
+has 'reaper_interval' => (is => 'ro', isa => 'Int', default => sub { 30 });
+has '_listener_reaper' => (is => 'rw');
 has '+_trait_namespace' => (default => 'AnyMQ::Topic::Trait');
 
-sub publish {
-    my($self, @messages) = @_;
-    for my $queue (values %{$self->queues}) {
-        if ($queue->destroyed) {
-            delete $self->queues->{$queue->id};
-            next;
-        }
+sub BUILD {
+    my $self = shift;
+    $self->install_reaper if $self->reaper_interval;
+}
 
-        $queue->append(@messages);
+sub install_reaper {
+    my $self = shift;
+
+    $self->_listener_reaper(
+        AnyEvent->timer(interval => $self->reaper_interval,
+                        cb => sub { $self->reap_destroyed_listeners })
+    );
+}
+
+sub reap_destroyed_listeners {
+    my $self = shift;
+    return if $self->has_no_listeners;
+    $self->remove_subscriber($_)
+        for grep { $_->destroyed } values %{$self->queues};
+
+    if ($self->recycle && $self->has_no_listeners) {
+        warn "==> kill ".$self->name;
+        delete $self->bus->topics->{$self->name};
     }
+}
+
+sub publish {
+    my ($self, @messages) = @_;
+    $self->reap_destroyed_listeners;
+    for (values %{$self->queues}) {
+        $_->append(@messages);
+    }
+    $self->install_reaper if $self->reaper_interval;
 }
 
 sub add_subscriber {
     my ($self, $queue) = @_;
-    $self->queues->{$queue->id} = $queue;
+    $self->add_listener($queue->id, $queue);
+}
+
+sub remove_subscriber {
+    my ($self, $queue) = @_;
+    delete $self->queues->{$queue->id};
 }
 
 __PACKAGE__->meta->make_immutable;
@@ -56,6 +95,17 @@ AnyMQ::Topic - AnyMQ Topic
 An AnyMQ::Topic instance is a topic where messages can be published
 to, and L<AnyMQ::Queue> objects can subscribe to.  each message
 published to the topic will be appended to each subscribing queue.
+
+=head1 ATTRIBUTES
+
+=head2 recycle
+
+True if the topic should be recycled once all listeners are gone.
+
+=head2 reaper_interval
+
+Interval in seconds that destroyed listeners to this topic should be
+reaped and freed.
 
 =head1 METHODS
 

@@ -1,14 +1,14 @@
 package AnyMQ;
 use strict;
 use 5.008_001;
-our $VERSION = '0.31';
+our $VERSION = '0.32';
 
 use AnyEvent;
-use Moose;
+use Any::Moose;
 use AnyMQ::Topic;
 use AnyMQ::Queue;
 
-with 'MooseX::Traits';
+with any_moose("X::Traits");
 
 has '+_trait_namespace' => (default => 'AnyMQ::Trait');
 
@@ -43,12 +43,15 @@ sub new_listener {
     }
 
     my $listener = AnyMQ::Queue->new;
-    $listener->subscribe(@_) if @_;
+    if (@_) {
+        $listener->subscribe($_)
+            for @_;
+    }
     return $listener;
 }
 
 __PACKAGE__->meta->make_immutable;
-no Moose;
+no Any::Moose;
 1;
 
 __END__

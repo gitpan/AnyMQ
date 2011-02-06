@@ -21,15 +21,13 @@ no_index:
     - xt
 recommends:
   MooseX::Traits: 0
-  MooseX::Types::DateTime: 0
 requires:
   Any::Moose: 0
   AnyEvent: 0
   MouseX::NativeTraits: 0
   MouseX::Traits: 0
-  MouseX::Types::DateTime: 0
   perl: 5.8.1
 resources:
   license: http://dev.perl.org/licenses/
   repository: git://github.com/clkao/AnyMQ.git
-version: 0.32
+version: 0.33

@@ -1,4 +1,5 @@
 package AnyMQ::Queue;
+use strict;
 use Any::Moose;
 use AnyEvent;
 use Try::Tiny;
@@ -119,6 +120,13 @@ sub poll {
         if @{ $self->{buffer} };
 }
 
+sub unpoll {
+    my $self = shift;
+    $self->cv->cb(undef);
+    $self->persistent(0);
+    $self->{timer} = $self->_reaper;
+}
+
 __PACKAGE__->meta->make_immutable;
 no Any::Moose;
 1;
@@ -165,6 +173,11 @@ Subscribe to a L<AnyMQ::Topic> object.
 
 This is the event-driven poll mechanism, which accepts a callback.
 Messages are streamed to C<$code_ref> passed in.
+
+=head2 unpoll
+
+Cancels a running L</poll>, which will result in L</on_timeout> being
+called.
 
 =head2 poll_once($code_ref, $timeout)
 
